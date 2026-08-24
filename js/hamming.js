@@ -1,10 +1,4 @@
 'use strict';
-// ─────────────────────────────────────────────────────────────────────────────
-// HAMMING(30, 25) SINGLE-ERROR-CORRECTING CODE
-//
-// Positions 1..30 (1-indexed).  Parity positions: 1, 2, 4, 8, 16.
-// The 25 non-parity positions hold 5 LENGTH bits then 20 PAYLOAD bits.
-// ─────────────────────────────────────────────────────────────────────────────
 (function () {
     const N = 30, K = 25;
     const PARITY_SET = new Set([1, 2, 4, 8, 16]);

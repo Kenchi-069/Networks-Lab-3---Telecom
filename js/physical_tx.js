@@ -1,18 +1,4 @@
 'use strict';
-// ─────────────────────────────────────────────────────────────────────────────
-// PHYSICAL TX  —  Canvas sender with high-contrast layout
-//
-// Layout: 4 MAGENTA corner markers on a grey background, 1 clock cell
-//         (toggling B/W), and a 2×2 data grid of coloured cells.
-//
-// Key design choices for robust camera detection:
-//   - Markers are MAGENTA (#FF00FF): a hue never found in natural scenes and
-//     trivially separated from R/G/B/White data cells in HSV hue-range.
-//   - Background is GREY (#808080): neutral mid-tone so it never saturates the
-//     hue detector and provides good contrast for white/coloured data cells.
-//   - Clock cell toggles BLACK/WHITE with a black outline so it is always
-//     visible against both the grey background and the grey background.
-// ─────────────────────────────────────────────────────────────────────────────
 (function () {
     const LO = window.LAYOUT;
     const CELL_HEX = ['#FFFFFF', '#FF0000', '#00FF00', '#0000FF'];

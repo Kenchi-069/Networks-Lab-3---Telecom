@@ -1,20 +1,4 @@
 'use strict';
-// ─────────────────────────────────────────────────────────────────────────────
-// MAIN — Stop-and-Wait ARQ protocol with per-symbol ACK pacing
-//
-// Protocol:
-//   1. Sender shows calibration frame → Receiver calibrates → sends READY
-//   2. For each symbol (0..5):
-//      - Sender: toggle clock, display symbol, wait for ACK (up to holdMs)
-//      - Receiver: detects clock change → reads symbol → plays ACK
-//      - Sender hears ACK → 500ms gap → next symbol
-//      - Sender timeout → advance anyway (holdMs was long enough)
-//   3. After all 6 symbols shown:
-//      - Sender goes to AWAIT_DECODE state
-//      - Receiver decodes accumulated bits
-//      - If decode OK → plays ACK → Sender DONE
-//      - If decode fails → plays NACK → Sender retransmits everything
-// ─────────────────────────────────────────────────────────────────────────────
 (function () {
 
     function show(id) {
@@ -48,9 +32,7 @@
         if (st)  st.textContent = label;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  HOME
-    // ═══════════════════════════════════════════════════════════════════════════
+
     let _permGranted = false, _cvOk = false;
 
     function checkUnlock() {
@@ -128,14 +110,13 @@
 
     initCvStatus();
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  SENDER  (Stop-and-Wait, per-symbol ACK pacing)
-    // ═══════════════════════════════════════════════════════════════════════════
+
     let TX = null, SARX = null;
     let sState      = 'IDLE';
     let sMsgBits    = [];
     let sErrBit     = null;
     let sRetransmit = false;
+    let sSeq        = 0;       // 1-bit sequence number (Alternating Bit Protocol)
     let sSymbols    = [];      // the 6 encoded symbols
     let sSymIdx     = 0;       // current symbol index being shown
     let sSymTimer   = null;    // per-symbol hold timeout
@@ -255,15 +236,15 @@
                 break;
 
             case 'AWAIT_DECODE':
-                // Final message-level ACK or NACK from receiver
                 clearTimeout(sDecodeTimer);
                 if (tone === 'ACK') {
                     setSenderState('DONE');
                     TX.drawIdle();
+                    sSeq ^= 1; // flip sequence bit for next new message
                     log('sender-log', 'Final ACK — transmission complete.', 'success');
                     setTimeout(() => setSenderState('IDLE'), 3000);
                 } else if (tone === 'NACK') {
-                    log('sender-log', 'NACK — receiver could not decode. Retransmitting…', 'warn');
+                    log('sender-log', 'NACK — receiver requested retransmission.', 'warn');
                     doRetransmitAll();
                 }
                 break;
@@ -273,11 +254,12 @@
     function doEncode() {
         setSenderState('ENCODE');
         const errBit  = sRetransmit ? null : sErrBit;
-        const bits48  = Framing.buildFrame(sMsgBits, errBit);
+        const bits48  = Framing.buildFrame(sMsgBits, errBit, sSeq);
         sSymbols      = Framing.bitsToSymbols(bits48);
         sSymIdx       = 0;
-        log('sender-log', `Encoded ${sSymbols.length} symbols (error@bit ${errBit ?? 'none'})`);
-        doTransmitNextSymbol();
+        log('sender-log', `Encoded ${sSymbols.length} symbols (SEQ=${sSeq}, error@bit ${errBit ?? 'none'})`);
+        TX.drawIdle();
+        setTimeout(doTransmitNextSymbol, 400); // 400ms idle gap ensures Symbol 0 transitions Black->White
     }
 
     function doTransmitNextSymbol() {
@@ -291,7 +273,7 @@
                     log('sender-log', 'Decode timeout — retransmitting…', 'warn');
                     doRetransmitAll();
                 }
-            }, 10000);
+            }, 14000);
             return;
         }
 
@@ -299,11 +281,9 @@
         TX.showSymbol(sSymbols[sSymIdx]);
         log('sender-log', `Showing symbol ${sSymIdx + 1}/${sSymbols.length}  [${sSymbols[sSymIdx].join(',')}]  hold=${getHoldMs()}ms`);
 
-        // Wait up to holdMs for ACK. If no ACK, advance anyway.
         sSymTimer = setTimeout(() => {
             log('sender-log', `  Symbol ${sSymIdx + 1} — no ACK received, advancing.`, 'warn');
             sSymIdx++;
-            // Still use SYM_GAP even on timeout to keep timing consistent
             setSenderState('SYM_GAP');
             setTimeout(doTransmitNextSymbol, 800);
         }, getHoldMs());
@@ -311,7 +291,9 @@
 
     function doRetransmitAll() {
         sRetransmit = true;
-        showCalibFrame();
+        setSenderState('ENCODE');
+        log('sender-log', 'Retransmitting frame…', 'warn');
+        setTimeout(doEncode, 1000);
     }
 
     function resetSender() {
@@ -356,11 +338,9 @@
         }
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  RECEIVER  (per-symbol ACK, final decode ACK/NACK)
-    // ═══════════════════════════════════════════════════════════════════════════
+
     let RX = null, rState = 'IDLE', rBitBuf = [], rSymCount = 0;
-    let rListenTimer = null, _overlayCtx = null;
+    let rListenTimer = null, rBurstTimer = null, rLastDecodedSeq = null, _overlayCtx = null;
 
     function initReceiver() {
         RX = null; rState = 'IDLE'; rBitBuf = []; rSymCount = 0;
@@ -436,23 +416,22 @@
     function startListening() {
         setRxState('LISTEN');
         rBitBuf = []; rSymCount = 0;
+        clearTimeout(rBurstTimer);
         RX.resetClock();
         document.getElementById('rx-result-area').classList.add('hidden');
 
-        // Overall timeout — if we haven't decoded after 60 seconds, give up
         rListenTimer = setTimeout(() => {
             if (rState === 'LISTEN') {
-                log('receiver-log', 'Listen timeout (60s). Sending NACK.', 'warn');
+                log('receiver-log', 'Listen timeout (12s). Sending NACK.', 'warn');
                 sendFinalNack();
             }
-        }, 60000);
+        }, 12000);
     }
 
     function onNewSymbol(cells) {
         if (rState !== 'LISTEN') return;
         rSymCount++;
 
-        // Accumulate bits: 4 cells × 2 bits each = 8 bits per symbol
         for (const c of cells) {
             rBitBuf.push((c >> 1) & 1);
             rBitBuf.push(c & 1);
@@ -464,37 +443,53 @@
         document.getElementById('dbg-bits').textContent =
             (rBitBuf.length > 40 ? '…' : '') + rBitBuf.slice(-40).join('');
 
-        // Send per-symbol ACK so sender knows to advance
         AudioTX.playTone('ACK').then(() => {
             log('receiver-log', `  ACK sent for symbol ${rSymCount}.`);
         });
 
-        // After accumulating enough bits, try to decode the frame
-        if (rBitBuf.length >= Framing.FRAME_BITS) {
+        // Inter-symbol burst watchdog: if stream stalls before 6 symbols arrive, reset
+        clearTimeout(rBurstTimer);
+        rBurstTimer = setTimeout(() => {
+            if (rState === 'LISTEN' && rBitBuf.length > 0 && rBitBuf.length < Framing.PADDED_BITS) {
+                log('receiver-log', 'Burst timeout (missed symbols). Resetting for retransmit.', 'warn');
+                sendFinalNack();
+            }
+        }, 4000);
+
+        if (rBitBuf.length >= Framing.PADDED_BITS) {
+            clearTimeout(rBurstTimer);
             const result = Framing.parseFrame(rBitBuf);
             if (result) {
                 clearTimeout(rListenTimer);
                 handleDecodeSuccess(result);
+            } else {
+                clearTimeout(rListenTimer);
+                log('receiver-log', 'Frame corrupted (failed parity / SYNC). Sending NACK.', 'error');
+                sendFinalNack();
             }
         }
     }
 
     function handleDecodeSuccess(result) {
-        setRxState('DONE');
-        log('receiver-log', `Frame decoded! L=${result.L}  msg=${result.messageBits.join('')}`, 'success');
-
-        if (result.errorMsgBitIdx !== null) {
-            log('receiver-log', `Error corrected at message bit ${result.errorMsgBitIdx}`, 'warn');
-        } else if (result.errorDataIdx !== null) {
-            log('receiver-log', 'Parity-bit error corrected (message intact).', 'warn');
+        clearTimeout(rBurstTimer);
+        if (result.seq === rLastDecodedSeq) {
+            log('receiver-log', `Duplicate frame received (SEQ=${result.seq}). Acknowledging.`, 'warn');
         } else {
-            log('receiver-log', 'No bit errors detected.');
+            rLastDecodedSeq = result.seq;
+            setRxState('DONE');
+            log('receiver-log', `Frame decoded! SEQ=${result.seq} L=${result.L} msg=${result.messageBits.join('')}`, 'success');
+
+            if (result.errorMsgBitIdx !== null) {
+                log('receiver-log', `Error corrected at message bit ${result.errorMsgBitIdx}`, 'warn');
+            } else if (result.errorDataIdx !== null) {
+                log('receiver-log', 'Parity-bit error corrected (message intact).', 'warn');
+            } else {
+                log('receiver-log', 'No bit errors detected.');
+            }
+
+            showResult(result);
         }
 
-        showResult(result);
-
-        // Send final ACK to confirm decode success
-        // Small delay to avoid collision with the per-symbol ACK
         setTimeout(() => {
             AudioTX.playTone('ACK').then(() => {
                 log('receiver-log', 'Final ACK sent — transmission complete.');
@@ -529,10 +524,10 @@
     }
 
     function sendFinalNack() {
+        clearTimeout(rBurstTimer);
         setRxState('DECODING');
         AudioTX.playTone('NACK').then(() => {
             log('receiver-log', 'NACK sent. Resetting — waiting for retransmit…');
-            // Reset and go back to listening
             rBitBuf = []; rSymCount = 0;
             if (RX) RX.resetClock();
             startListening();
@@ -597,6 +592,8 @@
 
     function resetReceiver() {
         clearTimeout(rListenTimer);
+        clearTimeout(rBurstTimer);
+        rLastDecodedSeq = null;
         rBitBuf = []; rSymCount = 0;
         setRxState('IDLE');
         document.getElementById('rx-result-area').classList.add('hidden');
@@ -619,9 +616,7 @@
         if (RX) RX.stop();
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  DEBUG CONSOLE
-    // ═══════════════════════════════════════════════════════════════════════════
+
     let debugAudioRX = null, debugRX = null, _dbgWarpCtx = null, _dbgWarpTimer = null;
 
     function initDebugLab() {
@@ -823,9 +818,7 @@
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  ROLE SELECTION
-    // ═══════════════════════════════════════════════════════════════════════════
+
     document.getElementById('btn-role-sender').onclick = () => {
         show('screen-sender');
         initSender();

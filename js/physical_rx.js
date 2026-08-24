@@ -1,20 +1,4 @@
 'use strict';
-// ─────────────────────────────────────────────────────────────────────────────
-// PHYSICAL RX  —  OpenCV.js camera receiver (ultra-robust version)
-//
-// Key features:
-//   1. Magenta (#FF00FF) marker detection via HSV hue-range inRange filter.
-//      Completely immune to dark backgrounds, shadows, clothing, furniture.
-//   2. Strict quad validation: convexity + area bounds + aspect + parallelism
-//      + diagonal ratio — all must pass before a quad is accepted.
-//   3. Quadrant-based corner classification (TL/TR/BL/BR) robust to camera tilt.
-//   4. Trimmed-mean pixel sampling (rejecting glare/specular highlights).
-//   5. Hybrid color classifier: Normalized Chromaticity + Brightness-Normalized
-//      RGB + Saturation dominance rules for colour accuracy across auto-exposure.
-//   6. K-frame clock debounce + 1-frame pending-capture delay for stable reads.
-//   7. 8-frame cooldown between symbols to prevent double-triggers.
-//   8. Full debug telemetry (candidate count, quad overlay, binary mask, FPS).
-// ─────────────────────────────────────────────────────────────────────────────
 (function () {
     const LO = window.LAYOUT;
     const CS = LO.CANON_SIZE;  // 400
