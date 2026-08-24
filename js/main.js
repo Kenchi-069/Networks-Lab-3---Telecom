@@ -219,20 +219,28 @@
                 break;
 
             case 'TRANSMIT':
-                // Per-symbol ACK from receiver — advance to next symbol
                 if (tone === 'ACK') {
                     clearTimeout(sSymTimer);
-                    log('sender-log', `  Symbol ${sSymIdx + 1} ACK'd.`, 'success');
                     sSymIdx++;
-                    // Enter SYM_GAP: deaf period to prevent ACK carry-over
-                    setSenderState('SYM_GAP');
-                    setTimeout(doTransmitNextSymbol, 800);
+                    if (sSymIdx >= sSymbols.length) {
+                        setSenderState('DONE');
+                        TX.drawIdle();
+                        sSeq ^= 1;
+                        log('sender-log', 'Final ACK received — transmission complete.', 'success');
+                        setTimeout(() => setSenderState('IDLE'), 3000);
+                    } else {
+                        log('sender-log', `  Symbol ${sSymIdx} ACK'd.`, 'success');
+                        setSenderState('SYM_GAP');
+                        setTimeout(doTransmitNextSymbol, 800);
+                    }
+                } else if (tone === 'NACK') {
+                    clearTimeout(sSymTimer);
+                    log('sender-log', 'NACK received — retransmitting frame.', 'warn');
+                    doRetransmitAll();
                 }
                 break;
 
             case 'SYM_GAP':
-                // DEAF — ignore all tones during inter-symbol gap
-                // This prevents the previous ACK from being detected again
                 break;
 
             case 'AWAIT_DECODE':
@@ -240,7 +248,7 @@
                 if (tone === 'ACK') {
                     setSenderState('DONE');
                     TX.drawIdle();
-                    sSeq ^= 1; // flip sequence bit for next new message
+                    sSeq ^= 1;
                     log('sender-log', 'Final ACK — transmission complete.', 'success');
                     setTimeout(() => setSenderState('IDLE'), 3000);
                 } else if (tone === 'NACK') {
@@ -443,11 +451,7 @@
         document.getElementById('dbg-bits').textContent =
             (rBitBuf.length > 40 ? '…' : '') + rBitBuf.slice(-40).join('');
 
-        AudioTX.playTone('ACK').then(() => {
-            log('receiver-log', `  ACK sent for symbol ${rSymCount}.`);
-        });
-
-        // Inter-symbol burst watchdog: if stream stalls before 6 symbols arrive, reset
+        // Inter-symbol burst watchdog: reset if symbol stream stalls before 6 symbols
         clearTimeout(rBurstTimer);
         rBurstTimer = setTimeout(() => {
             if (rState === 'LISTEN' && rBitBuf.length > 0 && rBitBuf.length < Framing.PADDED_BITS) {
@@ -467,13 +471,20 @@
                 log('receiver-log', 'Frame corrupted (failed parity / SYNC). Sending NACK.', 'error');
                 sendFinalNack();
             }
+        } else {
+            // For symbols 1..5, send pacing ACK immediately
+            AudioTX.playTone('ACK').then(() => {
+                log('receiver-log', `  ACK sent for symbol ${rSymCount}.`);
+            });
         }
     }
 
     function handleDecodeSuccess(result) {
         clearTimeout(rBurstTimer);
+        clearTimeout(rListenTimer);
+
         if (result.seq === rLastDecodedSeq) {
-            log('receiver-log', `Duplicate frame received (SEQ=${result.seq}). Acknowledging.`, 'warn');
+            log('receiver-log', `Duplicate frame received (SEQ=${result.seq}). Re-sending ACK.`, 'warn');
         } else {
             rLastDecodedSeq = result.seq;
             setRxState('DONE');
@@ -490,11 +501,12 @@
             showResult(result);
         }
 
-        setTimeout(() => {
-            AudioTX.playTone('ACK').then(() => {
-                log('receiver-log', 'Final ACK sent — transmission complete.');
-            });
-        }, 1500);
+        AudioTX.playTone('ACK').then(() => {
+            log('receiver-log', 'Final ACK sent — ready for next transmission.');
+            rBitBuf = []; rSymCount = 0;
+            if (RX) RX.resetClock();
+            setRxState('LISTEN');
+        });
     }
 
     function showResult(result) {

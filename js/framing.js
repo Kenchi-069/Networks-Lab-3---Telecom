@@ -2,7 +2,7 @@
 (function () {
     const SYNC = Object.freeze([1, 1, 1, 0, 0, 1, 0]);
     const END = Object.freeze([0, 1, 1, 1]);
-    const FRAME_BITS = 41;
+    const FRAME_BITS = 42;
     const PADDED_BITS = 48;
     const NUM_SYMBOLS = 6;
     const COLOR_NAMES = Object.freeze(['WHITE', 'RED', 'GREEN', 'BLUE']);
