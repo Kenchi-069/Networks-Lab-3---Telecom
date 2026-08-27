@@ -16,12 +16,9 @@
             // Clock debounce
             this.lastClockState  = 'B';
             this._debounce       = [];
-            this.K               = 5;   // frames that must all agree before symbol fires
+            this.K               = 3;   // 3 frames agreement for fast, reliable transition
             this._symbolCooldown = 0;   // frames to skip after a symbol fires
-            this.COOLDOWN_FRAMES = 8;   // minimum gap between symbols
-            // "pending capture": after debounce locks, wait 1 more frame and then
-            // sample cells (so the display is fully stable at the new state)
-            this._pendingCapture = false;
+            this.COOLDOWN_FRAMES = 4;   // minimum gap between symbols
 
             // Marker detection params (magenta HSV hue-range; area limits are in _extractCandidates)
             this.DS_W = 640;  // downsample width for detection pass
@@ -162,7 +159,6 @@
             } else {
                 this._lastQuad      = null;
                 this._lastWarpOk    = false;
-                this._pendingCapture = false;  // abort any pending symbol capture
                 if (this.onDebug) this.onDebug({
                     screenFound: false, cvReady: true,
                     candidateCount: this._lastCandidateCount || 0,
@@ -197,39 +193,29 @@
                 return;
             }
 
-            // Sample clock
+            // Sample clock with hysteresis around clockMidLuma
             const ck    = LO.CANON_CLOCK;
             const ckRgb = this._trimmedMean(warpedData.data, CS, CS, ck.x, ck.y, ck.hw);
             const luma  = 0.299 * ckRgb.r + 0.587 * ckRgb.g + 0.114 * ckRgb.b;
-            const ckSt  = luma < this.clockMidLuma ? 'B' : 'W';
+            const hyst  = 6;
+            let ckSt    = this.lastClockState;
+            if (this.lastClockState === 'B') {
+                if (luma > this.clockMidLuma + hyst) ckSt = 'W';
+            } else {
+                if (luma < this.clockMidLuma - hyst) ckSt = 'B';
+            }
 
             // Tick down symbol cooldown counter
             if (this._symbolCooldown > 0) this._symbolCooldown--;
 
-            // Sample data cells every frame (for debug display AND pending capture)
+            // Sample data cells every frame
             const rawCellRgb = LO.CANON_CELLS.map(c =>
                 this._trimmedMean(warpedData.data, CS, CS, c.x, c.y, c.hw));
             const cellColors = rawCellRgb.map(rgb => this._classify(rgb));
 
-            // ── Pending capture check ─────────────────────────────────────────
-            // This runs FIRST so that the capture happens on the frame AFTER the
-            // clock transition was confirmed (giving the display one full frame to settle).
+            // ── K-frame debounce & immediate stable symbol capture ───────────
+            // After K consecutive frames in the new state, the screen has already settled.
             let newSymbol = false;
-            if (this._pendingCapture) {
-                if (ckSt === this.lastClockState) {
-                    // Clock still stable at the newly-locked state: safe to capture
-                    this._pendingCapture = false;
-                    this._symbolCooldown = this.COOLDOWN_FRAMES;
-                    newSymbol = true;
-                } else {
-                    // Clock changed again before we could capture — discard (glitch)
-                    this._pendingCapture = false;
-                }
-            }
-
-            // ── K-frame debounce ──────────────────────────────────────────────
-            // All K frames must agree AND must differ from the last confirmed state.
-            // Evaluated AFTER pending capture so transition arms for the NEXT frame.
             this._debounce.push(ckSt);
             if (this._debounce.length > this.K) this._debounce.shift();
 
@@ -241,8 +227,9 @@
 
             if (clockTransition) {
                 this.lastClockState  = this._debounce[0];
-                this._debounce       = [];    // clear buffer to prevent re-triggering
-                this._pendingCapture = true;  // arm: sample cells on the NEXT frame
+                this._debounce       = [];
+                this._symbolCooldown = this.COOLDOWN_FRAMES;
+                newSymbol            = true;
             }
 
             if (this.onDebug) {
@@ -269,23 +256,13 @@
         // ── Marker detection ─────────────────────────────────────────────────────
 
         _findMarkers(W, H) {
-            // Detect MAGENTA (#FF00FF) finder markers via per-channel RGB thresholding.
-            //
-            // Magenta criteria (RGB):
-            //   R > 120, G < 100, B > 120
-            //
-            // Why RGB-channel split instead of HSV inRange:
-            //   cv.inRange() in OpenCV.js requires bounds Mats the same size as the
-            //   source, not scalar-like 1×1 Mats — using 1×1 bounds silently fails.
-            //   Per-channel thresholding is guaranteed to work and is equally fast.
-            //
-            // Fallback: if the magenta mask returns <4 candidates (heavy camera
-            //   auto-white-balance shift), also try an adaptive-threshold on the
-            //   grayscale image (same approach that worked before, as a safety net).
-            let src = null, rgb = null, rgba = null;
-            let rCh = null, gCh = null, bCh = null, rgbaChans = null, rgbChans = null;
-            let maskR = null, maskG = null, maskB = null;
-            let mask = null, closed = null, kernel = null;
+            // Detect MAGENTA (#FF00FF) finder markers via differential chromaticity.
+            // Magenta has high R and high B relative to G (R >> G and B >> G).
+            // This is immune to brightness shifts, camera exposure changes, and Bayer bleed.
+            let src = null, rgb = null;
+            let rCh = null, gCh = null, bCh = null, rgbChans = null;
+            let diffRG = null, diffBG = null, maskRG = null, maskBG = null;
+            let maskR = null, maskB = null, mask = null, closed = null, kernel = null;
             let gray = null, blur = null, binary = null;
             let contours = null, hierarchy = null;
             this._lastCandidateCount = 0;
@@ -294,7 +271,7 @@
                 const imgData = this._capCtx.getImageData(0, 0, W, H);
                 src = cv.matFromImageData(imgData); // RGBA
 
-                // ── Pass 1: Magenta RGB channel split ─────────────────────────────
+                // ── Pass 1: Magenta Differential Chromaticity ─────────────────────
                 rgb = new cv.Mat();
                 cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
 
@@ -304,15 +281,24 @@
                 gCh = rgbChans.get(1);
                 bCh = rgbChans.get(2);
 
-                // Threshold each channel: R>120, G<100, B>120
-                maskR = new cv.Mat(); maskG = new cv.Mat(); maskB = new cv.Mat();
-                cv.threshold(rCh, maskR, 120, 255, cv.THRESH_BINARY);     // R bright
-                cv.threshold(gCh, maskG, 100, 255, cv.THRESH_BINARY_INV); // G dim
-                cv.threshold(bCh, maskB, 120, 255, cv.THRESH_BINARY);     // B bright
+                diffRG = new cv.Mat();
+                diffBG = new cv.Mat();
+                cv.subtract(rCh, gCh, diffRG);
+                cv.subtract(bCh, gCh, diffBG);
+
+                maskRG = new cv.Mat();
+                maskBG = new cv.Mat();
+                maskR  = new cv.Mat();
+                maskB  = new cv.Mat();
+                cv.threshold(diffRG, maskRG, 25, 255, cv.THRESH_BINARY); // R significantly > G
+                cv.threshold(diffBG, maskBG, 25, 255, cv.THRESH_BINARY); // B significantly > G
+                cv.threshold(rCh,    maskR,  70, 255, cv.THRESH_BINARY); // R is bright
+                cv.threshold(bCh,    maskB,  70, 255, cv.THRESH_BINARY); // B is bright
 
                 mask = new cv.Mat();
-                cv.bitwise_and(maskR, maskG, mask);
-                cv.bitwise_and(mask,  maskB, mask);
+                cv.bitwise_and(maskRG, maskBG, mask);
+                cv.bitwise_and(mask,   maskR,  mask);
+                cv.bitwise_and(mask,   maskB,  mask);
 
                 // Morphological close to heal JPEG compression artefacts in marker
                 kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
@@ -331,8 +317,6 @@
                 let candidates = this._extractCandidates(contours, W, H);
 
                 // ── Pass 2 fallback: adaptive-threshold on grayscale ──────────────
-                // Covers edge-cases where camera auto-white-balance heavily washes
-                // out or shifts the magenta hue (e.g., warm incandescent light).
                 if (candidates.length < 4) {
                     gray = new cv.Mat();
                     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
@@ -369,7 +353,8 @@
             } finally {
                 src?.delete(); rgb?.delete();
                 rgbChans?.delete(); rCh?.delete(); gCh?.delete(); bCh?.delete();
-                maskR?.delete(); maskG?.delete(); maskB?.delete();
+                diffRG?.delete(); diffBG?.delete(); maskRG?.delete(); maskBG?.delete();
+                maskR?.delete(); maskB?.delete();
                 mask?.delete(); closed?.delete(); kernel?.delete();
                 gray?.delete(); blur?.delete(); binary?.delete();
                 contours?.delete(); hierarchy?.delete();
@@ -547,42 +532,40 @@
             const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
             const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
 
-            // Classify each point into quadrant relative to centroid.
-            // This is robust to camera tilt: TL has negative dx AND negative dy,
-            // TR has positive dx AND negative dy, etc.
-            // Ties (near-axis points) are broken by angle.
-            const withAngle = pts.map(p => ({
+            // Sort all 4 points by polar angle relative to centroid
+            const sortedByAngle = pts.map(p => ({
                 p,
-                dx: p.x - cx,
-                dy: p.y - cy,
-                angle: Math.atan2(p.y - cy, p.x - cx), // -π to π
-            }));
+                angle: Math.atan2(p.y - cy, p.x - cx),
+            })).sort((a, b) => a.angle - b.angle).map(item => item.p);
 
-            // Sort clockwise starting from -π (left side)
-            withAngle.sort((a, b) => a.angle - b.angle);
-
-            // After angle sort (counter-clockwise order from -π):
-            // The four points in CCW order from -π are: TL, BL, BR, TR
-            // Rearrange to CW order: TL, TR, BR, BL
-            // Strategy: assign by quadrant sign
-            let TL, TR, BR, BL;
-            for (const { p, dx, dy } of withAngle) {
-                if (dx <= 0 && dy <= 0) TL = p;        // upper-left
-                else if (dx >= 0 && dy <= 0) TR = p;   // upper-right
-                else if (dx >= 0 && dy >= 0) BR = p;   // lower-right
-                else                          BL = p;   // lower-left
+            // Find the point with minimum (x + y) as Top-Left (TL)
+            let tlIdx = 0, minSum = Infinity;
+            for (let i = 0; i < sortedByAngle.length; i++) {
+                const sum = sortedByAngle[i].x + sortedByAngle[i].y;
+                if (sum < minSum) {
+                    minSum = sum;
+                    tlIdx = i;
+                }
             }
 
-            // Fallback: if a quadrant was empty (obtuse quad), use angle order
-            if (!TL || !TR || !BR || !BL) {
-                // Angle-sorted CCW: indices are TL=0,BL=1,BR=2,TR=3 (roughly)
-                // Re-sort by smallest x+y for TL
-                const bySum = [...pts].sort((a, b) => (a.x + a.y) - (b.x + b.y));
-                TL = bySum[0];
-                BR = bySum[3];
-                const remaining = [bySum[1], bySum[2]];
-                TR = remaining[0].x > remaining[1].x ? remaining[0] : remaining[1];
-                BL = remaining[0].x < remaining[1].x ? remaining[0] : remaining[1];
+            // Rotate array so TL is at index 0
+            const Q = [];
+            for (let i = 0; i < 4; i++) {
+                Q.push(sortedByAngle[(tlIdx + i) % 4]);
+            }
+
+            // Verify orientation using signed cross product of (Q1 - Q0) x (Q3 - Q0)
+            const dx1 = Q[1].x - Q[0].x, dy1 = Q[1].y - Q[0].y;
+            const dx2 = Q[3].x - Q[0].x, dy2 = Q[3].y - Q[0].y;
+            const cross = dx1 * dy2 - dy1 * dx2;
+
+            let TL, TR, BR, BL;
+            if (cross > 0) {
+                // Clockwise order: Q0=TL, Q1=TR, Q2=BR, Q3=BL
+                TL = Q[0]; TR = Q[1]; BR = Q[2]; BL = Q[3];
+            } else {
+                // Counter-Clockwise order: Q0=TL, Q1=BL, Q2=BR, Q3=TR
+                TL = Q[0]; TR = Q[3]; BR = Q[2]; BL = Q[1];
             }
 
             return { TL, TR, BR, BL };
@@ -705,6 +688,14 @@
             const maxVal = Math.max(R, G, B), minVal = Math.min(R, G, B);
             const sat = maxVal > 0 ? (maxVal - minVal) / maxVal : 0;
 
+            // 1. Clear White: low saturation
+            if (sat < 0.22 && I > 150) return 0; // WHITE
+
+            // 2. High confidence channel dominance (immune to AWB)
+            if (rNorm > 0.44 && R > G + 20 && R > B + 20) return 1; // RED
+            if (gNorm > 0.40 && G > R + 15 && G > B + 15) return 2; // GREEN
+            if (bNorm > 0.40 && B > R + 15 && B > G + 15) return 3; // BLUE
+
             if (this.refColors && this.refColors.length === 4) {
                 // Calibrated classifier in Hybrid Chromaticity + Saturation + Normalized RGB space
                 let bestIdx = 0, bestDist = Infinity;
@@ -723,13 +714,13 @@
                     // Intensity-normalized RGB distance
                     const dRgb = ((R - ref.r) / 255) ** 2 + ((G - ref.g) / 255) ** 2 + ((B - ref.b) / 255) ** 2;
 
-                    let dist = dChroma * 5.0 + dSat * 2.0 + dRgb * 1.0;
+                    let dist = dChroma * 5.0 + dSat * 2.5 + dRgb * 1.0;
 
                     // Domain heuristics
-                    if (i === 0 && sat < 0.22) dist *= 0.6; // White boost
-                    if (i === 1 && rNorm > 0.42 && R > G + 15 && R > B + 15) dist *= 0.6; // Red boost
-                    if (i === 2 && gNorm > 0.38 && G > R + 15 && G > B + 15) dist *= 0.6; // Green boost
-                    if (i === 3 && bNorm > 0.38 && B > R + 15 && B > G + 15) dist *= 0.6; // Blue boost
+                    if (i === 0 && sat < 0.25) dist *= 0.6; // White boost
+                    if (i === 1 && rNorm > 0.38 && R > G) dist *= 0.7; // Red boost
+                    if (i === 2 && gNorm > 0.36 && G > R) dist *= 0.7; // Green boost
+                    if (i === 3 && bNorm > 0.36 && B > R) dist *= 0.7; // Blue boost
 
                     if (dist < bestDist) {
                         bestDist = dist;
@@ -750,7 +741,6 @@
             this.lastClockState  = 'B';
             this._debounce       = [];
             this._symbolCooldown = 0;
-            this._pendingCapture = false;
             this._lastQuad       = null;
             this._lostQuadFrames = 0;
         }

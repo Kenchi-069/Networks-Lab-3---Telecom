@@ -7,10 +7,10 @@
         { name: 'NACK', freqs: [2550, 2950] },
     ]);
 
-    const TARGET_BAND_HZ = 25;
-    const GUARD_MIN_HZ = 45;
-    const GUARD_MAX_HZ = 150;
-    const DEBOUNCE_POLLS = 4;
+    const TARGET_BAND_HZ = 35;
+    const GUARD_MIN_HZ = 60;
+    const GUARD_MAX_HZ = 160;
+    const DEBOUNCE_POLLS = 2;
 
     class AudioRX {
         constructor() {
@@ -18,10 +18,10 @@
             this._analyser = null;
             this._stream = null;
             this.running = false;
-            this.threshold = -46;
-            this.minProminenceDb = 12;
-            this.maxTwistDb = 9;
-            this.cooldown = 500;
+            this.threshold = -58;
+            this.minProminenceDb = 8;
+            this.maxTwistDb = 18;
+            this.cooldown = 400;
             this._lastFire = 0;
             this._timer = null;
             this._pendingTone = null;
@@ -50,11 +50,11 @@
                 }
                 const src = this._ctx.createMediaStreamSource(this._stream);
                 this._analyser = this._ctx.createAnalyser();
-                this._analyser.fftSize = 8192;
-                this._analyser.smoothingTimeConstant = 0.35;
+                this._analyser.fftSize = 2048;
+                this._analyser.smoothingTimeConstant = 0.20;
                 src.connect(this._analyser);
                 this.running = true;
-                this._timer = setInterval(() => this._poll(), 40);
+                this._timer = setInterval(() => this._poll(), 30);
                 return true;
             } catch (e) {
                 console.warn('[AudioRX] start failed:', e.message);
