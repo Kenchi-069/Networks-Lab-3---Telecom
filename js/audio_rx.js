@@ -7,10 +7,10 @@
         { name: 'NACK', freqs: [2550, 2950] },
     ]);
 
-    const TARGET_BAND_HZ = 35;
-    const GUARD_MIN_HZ = 60;
-    const GUARD_MAX_HZ = 160;
-    const DEBOUNCE_POLLS = 2;
+    const TARGET_BAND_HZ = 25;
+    const GUARD_MIN_HZ = 45;
+    const GUARD_MAX_HZ = 150;
+    const DEBOUNCE_POLLS = 4;
 
     class AudioRX {
         constructor() {
@@ -18,10 +18,10 @@
             this._analyser = null;
             this._stream = null;
             this.running = false;
-            this.threshold = -58;
-            this.minProminenceDb = 8;
-            this.maxTwistDb = 18;
-            this.cooldown = 400;
+            this.threshold = -46;
+            this.minProminenceDb = 12;
+            this.maxTwistDb = 9;
+            this.cooldown = 500;
             this._lastFire = 0;
             this._timer = null;
             this._pendingTone = null;
@@ -30,6 +30,17 @@
 
         async start() {
             try {
+                // Create + resume the AudioContext FIRST, while we're still as close as
+                // possible to the original user-gesture (click). If we create it only
+                // after `await getUserMedia(...)` returns, the permission-prompt async
+                // gap can make the browser refuse to actually resume it — it silently
+                // stays 'suspended', getFloatFrequencyData() keeps returning silence,
+                // and NO tone (READY/ACK/NACK) is ever detected, with no error thrown.
+                this._ctx = new (window.AudioContext || window.webkitAudioContext)();
+                if (this._ctx.state === 'suspended') {
+                    try { await this._ctx.resume(); } catch (_) { }
+                }
+
                 let stream = null;
                 try {
                     stream = await navigator.mediaDevices.getUserMedia({
@@ -44,17 +55,24 @@
                     stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
                 }
                 this._stream = stream;
-                this._ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+                // Belt-and-suspenders: getUserMedia's permission prompt is itself an
+                // async gap, so try resuming again now that we're back from it.
                 if (this._ctx.state === 'suspended') {
                     try { await this._ctx.resume(); } catch (_) { }
                 }
+                console.log('[AudioRX] AudioContext state after start:', this._ctx.state);
+                if (this._ctx.state === 'suspended' && this.onContextSuspended) {
+                    this.onContextSuspended();
+                }
+
                 const src = this._ctx.createMediaStreamSource(this._stream);
                 this._analyser = this._ctx.createAnalyser();
-                this._analyser.fftSize = 2048;
-                this._analyser.smoothingTimeConstant = 0.20;
+                this._analyser.fftSize = 8192;
+                this._analyser.smoothingTimeConstant = 0.35;
                 src.connect(this._analyser);
                 this.running = true;
-                this._timer = setInterval(() => this._poll(), 30);
+                this._timer = setInterval(() => this._poll(), 40);
                 return true;
             } catch (e) {
                 console.warn('[AudioRX] start failed:', e.message);
@@ -71,6 +89,12 @@
 
         _poll() {
             if (!this._analyser || !this._ctx) return;
+            if (this._ctx.state === 'suspended') {
+                // Never silently sit here forever — keep retrying, and tell the UI once.
+                this._ctx.resume().catch(() => { });
+                if (this.onContextSuspended) this.onContextSuspended();
+                return;
+            }
             const binCount = this._analyser.frequencyBinCount;
             const buf = new Float32Array(binCount);
             this._analyser.getFloatFrequencyData(buf);

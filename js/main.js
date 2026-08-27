@@ -22,14 +22,14 @@
         const el = document.getElementById(id);
         if (!el) return;
         el.textContent = text;
-        el.className   = 'status-badge ' + (type || 'idle');
+        el.className = 'status-badge ' + (type || 'idle');
     }
 
     function setDot(dotId, stateId, ok, label) {
         const dot = document.getElementById(dotId);
-        const st  = document.getElementById(stateId);
+        const st = document.getElementById(stateId);
         if (dot) dot.className = 'sys-dot ' + (ok === null ? 'loading' : ok ? 'ok' : 'fail');
-        if (st)  st.textContent = label;
+        if (st) st.textContent = label;
     }
 
 
@@ -37,7 +37,7 @@
 
     function checkUnlock() {
         const ready = _permGranted && _cvOk;
-        document.getElementById('btn-role-sender').disabled   = !ready;
+        document.getElementById('btn-role-sender').disabled = !ready;
         document.getElementById('btn-role-receiver').disabled = !ready;
         if (ready) document.getElementById('perm-gate').classList.add('hidden');
     }
@@ -67,7 +67,7 @@
     }
 
     document.getElementById('btn-grant-perms').onclick = async () => {
-        const btn  = document.getElementById('btn-grant-perms');
+        const btn = document.getElementById('btn-grant-perms');
         const hint = document.getElementById('perm-hint');
         btn.disabled = true;
         btn.textContent = 'Requesting…';
@@ -87,11 +87,11 @@
             try {
                 const cs = await navigator.mediaDevices.getUserMedia({ video: true });
                 cs.getTracks().forEach(t => t.stop()); camOk = true;
-            } catch (_) {}
+            } catch (_) { }
             try {
                 const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
                 ms.getTracks().forEach(t => t.stop()); micOk = true;
-            } catch (_) {}
+            } catch (_) { }
             setDot('cam-dot', 'cam-state', camOk, camOk ? 'granted' : 'denied');
             setDot('mic-dot', 'mic-state', micOk, micOk ? 'granted' : 'denied');
             if (camOk && micOk) {
@@ -112,14 +112,14 @@
 
 
     let TX = null, SARX = null;
-    let sState      = 'IDLE';
-    let sMsgBits    = [];
-    let sErrBit     = null;
+    let sState = 'IDLE';
+    let sMsgBits = [];
+    let sErrBit = null;
     let sRetransmit = false;
-    let sSeq        = 0;       // 1-bit sequence number (Alternating Bit Protocol)
-    let sSymbols    = [];      // the 6 encoded symbols
-    let sSymIdx     = 0;       // current symbol index being shown
-    let sSymTimer   = null;    // per-symbol hold timeout
+    let sSeq = 0;       // 1-bit sequence number (Alternating Bit Protocol)
+    let sSymbols = [];      // the 6 encoded symbols
+    let sSymIdx = 0;       // current symbol index being shown
+    let sSymTimer = null;    // per-symbol hold timeout
     let sDecodeTimer = null;   // final ACK/NACK timeout
 
     function initSender() {
@@ -127,29 +127,42 @@
         const S = Math.min(window.innerWidth, window.innerHeight) * 0.88;
         canvas.width = canvas.height = Math.floor(S);
 
-        TX   = new PhysicalTX(canvas);
+        TX = new PhysicalTX(canvas);
         SARX = new AudioRX();
         TX.drawIdle();
 
         SARX.onTone = onSenderTone;
+        let _warnedSuspended = false;
+        SARX.onContextSuspended = () => {
+            if (_warnedSuspended) return;
+            _warnedSuspended = true;
+            log('sender-log', 'Audio engine is suspended by the browser — tap/click anywhere on this page to enable tone detection.', 'warn');
+        };
         SARX.start().then(ok => {
             log('sender-log', ok
                 ? 'Microphone ready — listening for tones.'
                 : 'Mic unavailable. ACK/NACK detection disabled.', ok ? '' : 'warn');
         });
+        // A direct click on the page is the most reliable way to unstick a
+        // suspended AudioContext across browsers — wire it as a safety net.
+        document.addEventListener('click', () => {
+            if (SARX && SARX._ctx && SARX._ctx.state === 'suspended') {
+                SARX._ctx.resume().catch(() => { });
+            }
+        });
 
-        document.getElementById('msg-bits').oninput   = () => { sanitizeBits(); validateSender(); };
-        document.getElementById('error-bit').oninput  = validateSender;
+        document.getElementById('msg-bits').oninput = () => { sanitizeBits(); validateSender(); };
+        document.getElementById('error-bit').oninput = validateSender;
         document.getElementById('dwell-time').oninput = function () {
             document.getElementById('dwell-val').textContent = this.value;
         };
-        document.getElementById('btn-show-calib').onclick   = onSenderStart;
+        document.getElementById('btn-show-calib').onclick = onSenderStart;
         document.getElementById('btn-reset-sender').onclick = resetSender;
-        document.getElementById('sender-back').onclick      = () => { cleanupSender(); show('screen-role'); };
+        document.getElementById('sender-back').onclick = () => { cleanupSender(); show('screen-role'); };
 
         document.getElementById('btn-fullscreen').onclick = () => {
             const w = document.getElementById('tx-canvas-wrapper');
-            if (!document.fullscreenElement) w.requestFullscreen?.().catch(() => {});
+            if (!document.fullscreenElement) w.requestFullscreen?.().catch(() => { });
             else document.exitFullscreen?.();
         };
 
@@ -171,13 +184,13 @@
     function setSenderState(st) {
         sState = st;
         const labels = {
-            IDLE:         ['IDLE',              'idle'],
-            CALIBRATE:    ['CALIBRATE',         'calib'],
-            ENCODE:       ['ENCODE',            'active'],
-            TRANSMIT:     ['SENDING SYM',       'active'],
-            SYM_GAP:      ['GAP',               'active'],   // deaf between symbols
-            AWAIT_DECODE: ['AWAIT DECODE',      'calib'],
-            DONE:         ['DONE',              'success'],
+            IDLE: ['IDLE', 'idle'],
+            CALIBRATE: ['CALIBRATE', 'calib'],
+            ENCODE: ['ENCODE', 'active'],
+            TRANSMIT: ['SENDING SYM', 'active'],
+            SYM_GAP: ['GAP', 'active'],   // deaf between symbols
+            AWAIT_DECODE: ['AWAIT DECODE', 'calib'],
+            DONE: ['DONE', 'success'],
         };
         const [text, type] = labels[st] || [st, 'idle'];
         setBadge('sender-status-badge', text, type);
@@ -190,9 +203,9 @@
 
     function onSenderStart() {
         const bitsStr = document.getElementById('msg-bits').value;
-        const errVal  = document.getElementById('error-bit').value.trim();
-        sMsgBits    = bitsStr.split('').map(Number);
-        sErrBit     = errVal !== '' ? parseInt(errVal, 10) : null;
+        const errVal = document.getElementById('error-bit').value.trim();
+        sMsgBits = bitsStr.split('').map(Number);
+        sErrBit = errVal !== '' ? parseInt(errVal, 10) : null;
         sRetransmit = false;
 
         if (sErrBit !== null && (sErrBit < 0 || sErrBit >= sMsgBits.length)) {
@@ -261,10 +274,10 @@
 
     function doEncode() {
         setSenderState('ENCODE');
-        const errBit  = sRetransmit ? null : sErrBit;
-        const bits48  = Framing.buildFrame(sMsgBits, errBit, sSeq);
-        sSymbols      = Framing.bitsToSymbols(bits48);
-        sSymIdx       = 0;
+        const errBit = sRetransmit ? null : sErrBit;
+        const bits48 = Framing.buildFrame(sMsgBits, errBit, sSeq);
+        sSymbols = Framing.bitsToSymbols(bits48);
+        sSymIdx = 0;
         log('sender-log', `Encoded ${sSymbols.length} symbols (SEQ=${sSeq}, error@bit ${errBit ?? 'none'})`);
         TX.drawIdle();
         setTimeout(doTransmitNextSymbol, 400); // 400ms idle gap ensures Symbol 0 transitions Black->White
@@ -319,14 +332,14 @@
     function cleanupSender() {
         clearTimeout(sSymTimer);
         clearTimeout(sDecodeTimer);
-        if (TX)   TX.stop();
+        if (TX) TX.stop();
         if (SARX) SARX.stop();
     }
 
     document.addEventListener('fullscreenchange', () => {
         if (TX && document.querySelector('#screen-sender.active')) {
             const canvas = document.getElementById('tx-canvas');
-            const isFs   = !!document.fullscreenElement;
+            const isFs = !!document.fullscreenElement;
             const S = isFs
                 ? Math.min(window.screen.width, window.screen.height)
                 : Math.min(window.innerWidth, window.innerHeight) * 0.88;
@@ -354,10 +367,10 @@
         RX = null; rState = 'IDLE'; rBitBuf = []; rSymCount = 0;
         _overlayCtx = document.getElementById('rx-overlay').getContext('2d');
 
-        document.getElementById('btn-start-camera').onclick   = startCamera;
-        document.getElementById('btn-calibrate').onclick      = startCalibration;
+        document.getElementById('btn-start-camera').onclick = startCamera;
+        document.getElementById('btn-calibrate').onclick = startCalibration;
         document.getElementById('btn-reset-receiver').onclick = resetReceiver;
-        document.getElementById('receiver-back').onclick      = () => { cleanupReceiver(); show('screen-role'); };
+        document.getElementById('receiver-back').onclick = () => { cleanupReceiver(); show('screen-role'); };
 
         setRxState('IDLE');
         log('receiver-log', 'Receiver ready. Start camera to begin.');
@@ -366,12 +379,12 @@
     function setRxState(st) {
         rState = st;
         const labels = {
-            IDLE:        ['IDLE',         'idle'],
-            'CAMERA ON': ['CAMERA ON',    'active'],
-            CALIBRATING: ['CALIBRATING',  'calib'],
-            LISTEN:      ['LISTENING',    'active'],
-            DECODING:    ['DECODING',     'calib'],
-            DONE:        ['DONE',         'success'],
+            IDLE: ['IDLE', 'idle'],
+            'CAMERA ON': ['CAMERA ON', 'active'],
+            CALIBRATING: ['CALIBRATING', 'calib'],
+            LISTEN: ['LISTENING', 'active'],
+            DECODING: ['DECODING', 'calib'],
+            DONE: ['DONE', 'success'],
         };
         const [text, type] = labels[st] || [st, 'idle'];
         setBadge('receiver-status-badge', text, type);
@@ -381,7 +394,7 @@
         document.getElementById('btn-start-camera').disabled = true;
         const video = document.getElementById('rx-video');
         RX = new PhysicalRX(video);
-        RX.onDebug     = updateDebugPanel;
+        RX.onDebug = updateDebugPanel;
         RX.onNewSymbol = onNewSymbol;
 
         const ok = await RX.start();
@@ -510,9 +523,9 @@
     }
 
     function showResult(result) {
-        const area   = document.getElementById('rx-result-area');
-        const msgEl  = document.getElementById('rx-message');
-        const errEl  = document.getElementById('rx-err-info');
+        const area = document.getElementById('rx-result-area');
+        const msgEl = document.getElementById('rx-message');
+        const errEl = document.getElementById('rx-err-info');
         const metaEl = document.getElementById('rx-meta');
         area.classList.remove('hidden');
 
@@ -526,11 +539,11 @@
             });
             msgEl.innerHTML = html;
             errEl.textContent = `Bit ${errIdx} (0-indexed) was in error and has been corrected.`;
-            errEl.className   = 'rx-err-info error';
+            errEl.className = 'rx-err-info error';
         } else {
             msgEl.textContent = bits.join('');
-            errEl.textContent  = 'No error detected.';
-            errEl.className    = 'rx-err-info ok';
+            errEl.textContent = 'No error detected.';
+            errEl.className = 'rx-err-info ok';
         }
         metaEl.textContent = `Length: ${bits.length} bit${bits.length !== 1 ? 's' : ''}  |  Symbols: ${rSymCount}`;
     }
@@ -552,7 +565,7 @@
             found ? '4/4 detected' : `searching… (${info.candidateCount || 0} candidates)`;
 
         if (info.clockState !== undefined) {
-            const pending  = info.newSymbol ? ' ★ SYMBOL' : (info.cooldown > 0 ? ` [cd:${info.cooldown}]` : '');
+            const pending = info.newSymbol ? ' ★ SYMBOL' : (info.cooldown > 0 ? ` [cd:${info.cooldown}]` : '');
             document.getElementById('dbg-clock').textContent =
                 `${info.clockState}  luma=${info.luma}  mid=${info.midLuma}${pending}`;
         }
@@ -569,15 +582,15 @@
 
     function drawQuadOverlay(quad) {
         const overlay = document.getElementById('rx-overlay');
-        const video   = document.getElementById('rx-video');
-        overlay.width  = overlay.offsetWidth  || video.offsetWidth;
+        const video = document.getElementById('rx-video');
+        overlay.width = overlay.offsetWidth || video.offsetWidth;
         overlay.height = overlay.offsetHeight || video.offsetHeight;
         const ctx = _overlayCtx;
         ctx.clearRect(0, 0, overlay.width, overlay.height);
 
         if (!quad || !video.videoWidth) return;
 
-        const sx = overlay.width  / video.videoWidth;
+        const sx = overlay.width / video.videoWidth;
         const sy = overlay.height / video.videoHeight;
         const pts = [quad.TL, quad.TR, quad.BR, quad.BL].map(p => ({
             x: p.x * sx, y: p.y * sy
@@ -591,7 +604,7 @@
         ctx.fill();
 
         ctx.strokeStyle = '#22d3a5';
-        ctx.lineWidth   = 2;
+        ctx.lineWidth = 2;
         ctx.stroke();
 
         pts.forEach(p => {
@@ -646,7 +659,7 @@
         };
 
         const btnStart = document.getElementById('btn-dbg-listen-start');
-        const btnStop  = document.getElementById('btn-dbg-listen-stop');
+        const btnStop = document.getElementById('btn-dbg-listen-stop');
 
         btnStart.onclick = async () => {
             debugAudioRX = new AudioRX();
@@ -667,7 +680,7 @@
             const ok = await debugAudioRX.start();
             if (ok) {
                 btnStart.disabled = true;
-                btnStop.disabled  = false;
+                btnStop.disabled = false;
                 log('debug-log', 'Mic detector started.');
             } else {
                 log('debug-log', 'Mic start failed.', 'error');
@@ -677,13 +690,13 @@
         btnStop.onclick = () => {
             if (debugAudioRX) { debugAudioRX.stop(); debugAudioRX = null; }
             btnStart.disabled = false;
-            btnStop.disabled  = true;
+            btnStop.disabled = true;
             log('debug-log', 'Detector stopped.');
         };
 
         // Vision debug
         const btnCamStart = document.getElementById('btn-dbg-cam-start');
-        const btnCamStop  = document.getElementById('btn-dbg-cam-stop');
+        const btnCamStop = document.getElementById('btn-dbg-cam-stop');
         const btnDbgCalib = document.getElementById('btn-dbg-calib');
         _dbgWarpCtx = document.getElementById('dbg-warp-canvas').getContext('2d');
         const dbgBinaryCtx = document.getElementById('dbg-binary-canvas').getContext('2d');
@@ -696,7 +709,7 @@
             const ok = await debugRX.start();
             if (ok) {
                 btnCamStart.disabled = true;
-                btnCamStop.disabled  = false;
+                btnCamStop.disabled = false;
                 if (btnDbgCalib) btnDbgCalib.disabled = false;
                 log('debug-log', 'Debug camera started.');
 
@@ -742,7 +755,7 @@
             if (debugRX) { debugRX.stop(); debugRX = null; }
             if (_dbgWarpTimer) { clearInterval(_dbgWarpTimer); _dbgWarpTimer = null; }
             btnCamStart.disabled = false;
-            btnCamStop.disabled  = true;
+            btnCamStop.disabled = true;
             if (btnDbgCalib) btnDbgCalib.disabled = true;
             log('debug-log', 'Debug camera stopped.');
         };
@@ -761,13 +774,13 @@
         const overlay = document.getElementById('dbg-overlay');
 
         if (overlay && video && video.videoWidth) {
-            overlay.width  = overlay.offsetWidth  || video.offsetWidth;
+            overlay.width = overlay.offsetWidth || video.offsetWidth;
             overlay.height = overlay.offsetHeight || video.offsetHeight;
             const ctx = overlay.getContext('2d');
             ctx.clearRect(0, 0, overlay.width, overlay.height);
 
             if (info.quad) {
-                const sx = overlay.width  / video.videoWidth;
+                const sx = overlay.width / video.videoWidth;
                 const sy = overlay.height / video.videoHeight;
                 const pts = [info.quad.TL, info.quad.TR, info.quad.BR, info.quad.BL].map(p => ({
                     x: p.x * sx, y: p.y * sy
@@ -781,7 +794,7 @@
                 ctx.fill();
 
                 ctx.strokeStyle = '#22d3a5';
-                ctx.lineWidth   = 2;
+                ctx.lineWidth = 2;
                 ctx.stroke();
 
                 pts.forEach((p, idx) => {
@@ -803,8 +816,8 @@
 
         if (info.cellColors !== undefined) {
             const COLOR_BITS = ['00', '01', '10', '11'];
-            const COLOR_HEX  = ['#FFFFFF', '#FF2222', '#22DD22', '#2266FF'];
-            const POS_NAMES  = ['TL', 'TR', 'BL', 'BR'];
+            const COLOR_HEX = ['#FFFFFF', '#FF2222', '#22DD22', '#2266FF'];
+            const POS_NAMES = ['TL', 'TR', 'BL', 'BR'];
 
             let bits8 = '';
             info.cellColors.forEach((cName, i) => {
